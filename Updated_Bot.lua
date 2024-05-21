@@ -12,60 +12,68 @@ colors = {
   gray = "\27[90m"
 }
 
-function addLog(msg, text) -- Function definition commented for performance, can be used for debugging
+function addLog(msg, text)
   Logs[msg] = Logs[msg] or {}
   table.insert(Logs[msg], text)
 end
 
 -- Checks if two points are within a given range.
--- @param x1, y1: Coordinates of the first point.
--- @param x2, y2: Coordinates of the second point.
--- @param range: The maximum allowed distance between the points.
--- @return: Boolean indicating if the points are within the specified range.
 function inRange(x1, y1, x2, y2, range)
     return math.abs(x1 - x2) <= range and math.abs(y1 - y2) <= range
 end
 
--- Decides the next action based on player proximity and energy.
--- If any player is within range, it initiates an attack; otherwise, moves randomly.
+-- Calculates the Manhattan distance between two points.
+function calculateDistance(x1, y1, x2, y2)
+    return math.abs(x1 - x2) + math.abs(y1 - y2)
+end
+
+-- Enhanced decision-making function with energy management and dynamic movement strategy.
 function decideNextAction()
   local player = LatestGameState.Players[ao.id]
+  local closestTarget = nil
+  local minDistance = math.huge
   local targetInRange = false
--- the idea is to run away from the closest and accumulate the energy
-  local distanceX = nil
-  local distanceY = nil
 
-  
   for target, state in pairs(LatestGameState.Players) do
-      if distanceX = nil or state.x - player.x < distanceX then
-        distanceX = state.x - player.x
-      end
-      if distanceY = nil or state.y - player.y < distanceX then
-        distanceY = state.y - player.y
-      end
-      if target ~= ao.id and inRange(player.x, player.y, state.x, state.y, 1) then
-          targetInRange = true
-      -- continue the for loop
+      if target ~= ao.id then
+          local distance = calculateDistance(player.x, player.y, state.x, state.y)
+          if distance < minDistance then
+              minDistance = distance
+              closestTarget = state
+          end
+          if inRange(player.x, player.y, state.x, state.y, 1) then
+              targetInRange = true
+          end
       end
   end
 
--- engage the enemy if in range
+  -- Decide whether to attack or move based on energy and proximity.
   if player.energy > 5 and targetInRange then
     print(colors.red .. "Player in range. Attacking." .. colors.reset)
     ao.send({Target = Game, Action = "PlayerAttack", Player = ao.id, AttackEnergy = tostring(player.energy)})
+  elseif player.energy <= 2 then
+    print(colors.blue .. "Low energy. Attempting to heal." .. colors.reset)
+    ao.send({Target = Game, Action = "PlayerHeal", Player = ao.id})
   else
--- runs away from the closest in either horizontal or vertical direction
-    print(colors.red .. "No player in range or insufficient energy. Moving away." .. colors.reset)
-    if distanceX < distanceY then
-      -- only run in a single direction first
-      ao.send({Target = Game, Action = "PlayerMove", Player = ao.id, Direction = "Right"})
-    else
-      ao.send({Target = Game, Action = "PlayerMove", Player = ao.id, Direction = "Up"})
+    local directions = {"Up", "Down", "Left", "Right"}
+    local moveDirection = directions[math.random(#directions)]
+    if closestTarget then
+        -- Move away from the closest target
+        if closestTarget.x > player.x then
+            moveDirection = "Left"
+        elseif closestTarget.x < player.x then
+            moveDirection = "Right"
+        elseif closestTarget.y > player.y then
+            moveDirection = "Up"
+        else
+            moveDirection = "Down"
+        end
     end
+    print(colors.green .. "No player in range or insufficient energy. Moving " .. moveDirection .. "." .. colors.reset)
+    ao.send({Target = Game, Action = "PlayerMove", Player = ao.id, Direction = moveDirection})
   end
-  InAction = false -- InAction logic added
+  InAction = false
 end
-
 
 -- Handler to print game announcements and trigger game state updates.
 Handlers.add(
@@ -75,9 +83,9 @@ Handlers.add(
     if msg.Event == "Started-Waiting-Period" then
       ao.send({Target = ao.id, Action = "AutoPay"})
     elseif (msg.Event == "Tick" or msg.Event == "Started-Game") and not InAction then
-      InAction = true -- InAction logic added
+      InAction = true
       ao.send({Target = Game, Action = "GetGameState"})
-    elseif InAction then -- InAction logic added
+    elseif InAction then
       print("Previous action still in progress. Skipping.")
     end
     print(colors.green .. msg.Event .. ": " .. msg.Data .. colors.reset)
@@ -89,8 +97,8 @@ Handlers.add(
   "GetGameStateOnTick",
   Handlers.utils.hasMatchingTag("Action", "Tick"),
   function ()
-    if not InAction then -- InAction logic added
-      InAction = true -- InAction logic added
+    if not InAction then
+      InAction = true
       print(colors.gray .. "Getting game state..." .. colors.reset)
       ao.send({Target = Game, Action = "GetGameState"})
     else
@@ -109,7 +117,6 @@ Handlers.add(
   end
 )
 
-
 -- Handler to update the game state upon receiving game state information.
 Handlers.add(
   "UpdateGameState",
@@ -118,7 +125,7 @@ Handlers.add(
     local json = require("json")
     LatestGameState = json.decode(msg.Data)
     ao.send({Target = ao.id, Action = "UpdatedGameState"})
-    print("Game state updated. Print \'LatestGameState\' for detailed view.")
+    print("Game state updated. Print 'LatestGameState' for detailed view.")
   end
 )
 
@@ -128,7 +135,7 @@ Handlers.add(
   Handlers.utils.hasMatchingTag("Action", "UpdatedGameState"),
   function ()
     if LatestGameState.GameMode ~= "Playing" then
-      InAction = false -- InAction logic added
+      InAction = false
       return
     end
     print("Deciding next action.")
@@ -137,16 +144,15 @@ Handlers.add(
   end
 )
 
-
 -- Handler to automatically attack when hit by another player.
 Handlers.add(
   "ReturnAttack",
   Handlers.utils.hasMatchingTag("Action", "Hit"),
   function (msg)
-    if not InAction then -- InAction logic added
-      InAction = true -- InAction logic added
+    if not InAction then
+      InAction = true
       local playerEnergy = LatestGameState.Players[ao.id].energy
-      if playerEnergy == undefined then
+      if playerEnergy == nil then
         print(colors.red .. "Unable to read energy." .. colors.reset)
         ao.send({Target = Game, Action = "Attack-Failed", Reason = "Unable to read energy."})
       elseif playerEnergy == 0 then
@@ -156,7 +162,7 @@ Handlers.add(
         print(colors.red .. "Returning attack." .. colors.reset)
         ao.send({Target = Game, Action = "PlayerAttack", Player = ao.id, AttackEnergy = tostring(playerEnergy)})
       end
-      InAction = false -- InAction logic added
+      InAction = false
       ao.send({Target = ao.id, Action = "Tick"})
     else
       print("Previous action still in progress. Skipping.")
